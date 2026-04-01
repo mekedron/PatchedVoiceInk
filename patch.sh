@@ -445,6 +445,49 @@ echo "==> Force pushing to origin..."
 git push origin main --force
 git push origin "$TAG" --force
 
+# ── Gather release notes ──────────────────────────────────────────────────────
+echo ""
+echo "==> Gathering release notes..."
+
+UPSTREAM_NOTES=$(gh release view "v${VERSION}" --repo Beingpax/VoiceInk --json body -q .body 2>/dev/null || echo "")
+PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || echo "")
+if [ -n "$PREV_TAG" ]; then
+    COMMIT_LOG=$(git log --format="- %s (\`%h\`)" "${PREV_TAG}..v${VERSION}" 2>/dev/null || echo "")
+else
+    COMMIT_LOG=$(git log --format="- %s (\`%h\`)" -30 "v${VERSION}" 2>/dev/null || echo "")
+fi
+
+NOTES_FILE=$(mktemp)
+cat > "$NOTES_FILE" << NOTESEOF
+Patched release based on upstream v${VERSION}.
+
+## Fork changes
+- Trial expiration removed — app always starts in licensed state
+- Sparkle auto-updates pointed to this fork
+
+Based on [Beingpax/VoiceInk@${UPSTREAM_SHA_SHORT}](https://github.com/Beingpax/VoiceInk/commit/$UPSTREAM_SHA)
+NOTESEOF
+
+if [ -n "$UPSTREAM_NOTES" ]; then
+    cat >> "$NOTES_FILE" << NOTESEOF
+
+---
+
+## Upstream release notes (v${VERSION})
+
+${UPSTREAM_NOTES}
+NOTESEOF
+fi
+
+if [ -n "$COMMIT_LOG" ]; then
+    cat >> "$NOTES_FILE" << NOTESEOF
+
+## Commits${PREV_TAG:+ since $PREV_TAG}
+
+${COMMIT_LOG}
+NOTESEOF
+fi
+
 # ── GitHub release ────────────────────────────────────────────────────────────
 echo ""
 echo "==> Creating GitHub release $TAG..."
@@ -454,16 +497,8 @@ gh release delete "$TAG" --repo "$GITHUB_REPO" --yes 2>/dev/null || true
 gh release create "$TAG" "$DMG_NAME" \
     --repo "$GITHUB_REPO" \
     --title "VoiceInk $TAG" \
-    --notes "$(cat << EOF
-Patched release based on upstream v${VERSION}.
-
-## Changes from upstream
-- Trial expiration removed — app always starts in licensed state
-- Sparkle auto-updates pointed to this fork
-
-Based on [Beingpax/VoiceInk@${UPSTREAM_SHA_SHORT}](https://github.com/Beingpax/VoiceInk/commit/$UPSTREAM_SHA)
-EOF
-)"
+    --notes-file "$NOTES_FILE"
+rm -f "$NOTES_FILE"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
