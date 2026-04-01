@@ -1,0 +1,652 @@
+name: Build & Release VoiceInk
+
+on:
+  schedule:
+    - cron: "0 10 * * 1"  # Every Monday at 10:00 UTC
+  workflow_dispatch:
+    inputs:
+      skip_cache:
+        description: "Skip whisper.xcframework cache"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: Beingpax/VoiceInk
+  UPSTREAM_URL: https://github.com/Beingpax/VoiceInk.git
+  SPARKLE_PUBLIC_KEY: "22HdaJksDsRyOwfyMqARsF0on0MXQdfmCSeGTk+EaCU="
+
+jobs:
+  # ── Determine version and check if already released ──────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      tag: ${{ steps.info.outputs.tag }}
+      upstream_sha: ${{ steps.info.outputs.upstream_sha }}
+      upstream_sha_short: ${{ steps.info.outputs.upstream_sha_short }}
+      already_released: ${{ steps.info.outputs.already_released }}
+    steps:
+      - name: Fetch upstream and determine version
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --depth 1 "$UPSTREAM_URL" upstream-src
+          cd upstream-src
+
+          UPSTREAM_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA_SHORT=$(git rev-parse --short HEAD)
+          VERSION=$(grep 'MARKETING_VERSION' VoiceInk.xcodeproj/project.pbxproj \
+            | head -1 | grep -oE '[0-9]+\.[0-9]+[0-9.]*')
+          TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+            echo "already_released=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release $TAG already exists, skipping"
+          else
+            echo "already_released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=$VERSION"               >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"                        >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA"      >> "$GITHUB_OUTPUT"
+          echo "upstream_sha_short=$UPSTREAM_SHA_SHORT" >> "$GITHUB_OUTPUT"
+
+          echo "Version: $VERSION | Tag: $TAG | Upstream: $UPSTREAM_SHA_SHORT"
+
+  # ── Build for each architecture ──────────────────────────────────────────────
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.already_released != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+            arch_name: Apple-Silicon
+          - runner: macos-26
+            arch: x86_64
+            arch_name: Intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      UPSTREAM_SHA_SHORT: ${{ needs.prepare.outputs.upstream_sha_short }}
+      HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
+      LOCAL_DERIVED_DATA: .local-build
+    steps:
+      - name: Select latest Xcode
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$LATEST_XCODE"
+          echo "Using $(xcodebuild -version | head -1)"
+
+      - name: Checkout upstream VoiceInk
+        uses: actions/checkout@v4
+        with:
+          repository: Beingpax/VoiceInk
+          ref: main
+
+      # ── Apply all patches ────────────────────────────────────────────────────
+      - name: "Patch: LicenseViewModel.swift"
+        run: |
+          python3 << 'PYEOF'
+          import re
+
+          path = "VoiceInk/Models/LicenseViewModel.swift"
+          with open(path) as f:
+              src = f.read()
+
+          src = re.sub(
+              r'@Published private\(set\) var licenseState: LicenseState = \.trial\([^)]*\)[^\n]*',
+              '@Published private(set) var licenseState: LicenseState = .licensed',
+              src
+          )
+          src = re.sub(
+              r'func startTrial\(\) \{\n(.*?\n)*?    \}',
+              'func startTrial() {\n    }',
+              src
+          )
+          src = re.sub(
+              r'private func loadLicenseState\(\) \{\n(.*?\n)*?    \}',
+              'private func loadLicenseState() {\n        licenseState = .licensed\n    }',
+              src
+          )
+          src = re.sub(
+              r'var canUseApp: Bool \{\n(.*?\n)*?    \}',
+              'var canUseApp: Bool {\n        true\n    }',
+              src
+          )
+          src = re.sub(
+              r'licenseState = \.trial\(daysRemaining: trialPeriodDays\)[^\n]*',
+              'licenseState = .licensed',
+              src
+          )
+
+          with open(path, "w") as f:
+              f.write(src)
+          print("  Patched LicenseViewModel.swift")
+          PYEOF
+
+      - name: "Patch: TranscriptionPipeline.swift"
+        run: |
+          TRANSCRIPTION_FILE=$(grep -rl 'trialExpired.*licenseViewModel' VoiceInk/ 2>/dev/null | head -1 || true)
+          if [ -n "$TRANSCRIPTION_FILE" ]; then
+            python3 - "$TRANSCRIPTION_FILE" << 'PYEOF'
+          import re, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(
+              r'\n\s*if case \.trialExpired = licenseViewModel\.licenseState \{\n.*?\}\n',
+              '\n',
+              src, flags=re.DOTALL
+          )
+          with open(path, "w") as f:
+              f.write(src)
+          print(f"  Patched {path}")
+          PYEOF
+          else
+            echo "  (no trialExpired block found — skipping)"
+          fi
+
+      - name: "Patch: MetricsView.swift"
+        run: |
+          python3 << 'PYEOF'
+          path = "VoiceInk/Views/MetricsView.swift"
+          with open(path) as f:
+              lines = f.readlines()
+
+          out = []
+          skip = False
+          for line in lines:
+              if '// Trial Message' in line or (not skip and 'if case .trial' in line and 'licenseViewModel' in line):
+                  skip = True
+                  continue
+              if skip and 'Content(' in line:
+                  skip = False
+              if skip:
+                  continue
+              out.append(line)
+
+          with open(path, "w") as f:
+              f.writelines(out)
+          print("  Patched MetricsView.swift")
+          PYEOF
+
+      - name: "Patch: DashboardPromotionsSection.swift"
+        run: |
+          python3 << 'PYEOF'
+          import re
+          path = "VoiceInk/Views/Metrics/DashboardPromotionsSection.swift"
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(
+              r'(private var shouldShowUpgradePromotion: Bool \{\n).*?(\n    \})',
+              r'\1        false\2',
+              src, flags=re.DOTALL
+          )
+          with open(path, "w") as f:
+              f.write(src)
+          print("  Patched DashboardPromotionsSection.swift")
+          PYEOF
+
+      - name: "Patch: LicenseManagementView.swift"
+        run: |
+          python3 << 'PYEOF'
+          path = "VoiceInk/Views/LicenseManagementView.swift"
+          with open(path) as f:
+              src = f.read()
+
+          src = src.replace(
+              '"Thank you for supporting VoiceInk"',
+              '"An incredible voice-to-text tool by an indie developer"'
+          )
+
+          START = "    private var activatedContent: some View {\n"
+          END = "    private func featureItem"
+
+          si = src.index(START)
+          ei = src.index(END)
+
+          replacement = """\
+              private var activatedContent: some View {
+                  VStack(spacing: 32) {
+                      VStack(spacing: 24) {
+                          HStack {
+                              Image(systemName: "heart.circle.fill")
+                                  .font(.system(size: 24))
+                                  .foregroundStyle(.pink)
+                              Text("Community Patched Build")
+                                  .font(.headline)
+                              Spacer()
+                          }
+
+                          Divider()
+
+                          Text("You're using an unofficial build of VoiceInk. This app is crafted by a solo indie developer who pours their heart into making voice-to-text effortless.\\n\\nIf VoiceInk has become part of your daily workflow, consider buying a license to support its continued development.")
+                              .font(.subheadline)
+                              .foregroundStyle(.secondary)
+                              .lineSpacing(4)
+
+                          Button(action: {
+                              if let url = URL(string: "https://tryvoiceink.com/") {
+                                  NSWorkspace.shared.open(url)
+                              }
+                          }) {
+                              Label("Get VoiceInk \\u{2014} Support the Developer", systemImage: "cart.fill")
+                                  .frame(maxWidth: .infinity)
+                                  .padding(.vertical, 8)
+                          }
+                          .buttonStyle(.borderedProminent)
+                      }
+                      .padding(32)
+                      .background(CardBackground(isSelected: false))
+                      .shadow(color: .black.opacity(0.05), radius: 10)
+                  }
+              }
+
+          """
+
+          src = src[:si] + replacement + src[ei:]
+
+          with open(path, "w") as f:
+              f.write(src)
+          print("  Patched LicenseManagementView.swift")
+          PYEOF
+
+      - name: "Patch: Info.plist (Sparkle URLs)"
+        env:
+          APPCAST_LINK: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
+        run: |
+          python3 << 'PYEOF'
+          import re, os
+
+          url = os.environ["APPCAST_LINK"]
+          key = os.environ["SPARKLE_PUBLIC_KEY"]
+          path = "VoiceInk/Info.plist"
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(
+              r'(<key>SUFeedURL</key>\s*<string>)[^<]*(</string>)',
+              r'\g<1>' + url + r'\2',
+              src
+          )
+          src = re.sub(
+              r'(<key>SUPublicEDKey</key>\s*<string>)[^<]*(</string>)',
+              r'\g<1>' + key + r'\2',
+              src
+          )
+          with open(path, "w") as f:
+              f.write(src)
+          print(f"  Patched Info.plist -> {url}")
+          PYEOF
+
+      - name: Summary of patches
+        run: echo "All patches applied successfully"
+
+      # ── Build whisper.xcframework ────────────────────────────────────────────
+      - name: Cache whisper.xcframework
+        if: ${{ !inputs.skip_cache }}
+        uses: actions/cache@v4
+        id: whisper-cache
+        with:
+          path: ~/VoiceInk-Dependencies
+          key: whisper-xcframework-v1-${{ matrix.arch }}
+
+      - name: Build whisper.xcframework
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/VoiceInk-Dependencies
+          git clone https://github.com/ggerganov/whisper.cpp.git ~/VoiceInk-Dependencies/whisper.cpp
+          cd ~/VoiceInk-Dependencies/whisper.cpp
+          ./build-xcframework.sh
+
+      # ── Build VoiceInk ──────────────────────────────────────────────────────
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+            -derivedDataPath "$LOCAL_DERIVED_DATA" \
+            -xcconfig LocalBuild.xcconfig \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
+            ARCHS="${{ matrix.arch }}" \
+            -resolvePackageDependencies
+
+      - name: Patch FluidAudio package (Swift 5 mode)
+        run: |
+          FLUID_PKG="$LOCAL_DERIVED_DATA/SourcePackages/checkouts/FluidAudio/Package.swift"
+          if [ -f "$FLUID_PKG" ] && ! grep -q 'swiftLanguageMode' "$FLUID_PKG"; then
+            echo "Patching FluidAudio for Swift 5 language mode..."
+            chmod u+w "$FLUID_PKG"
+            python3 - "$FLUID_PKG" << 'PYEOF'
+          import sys
+          p = sys.argv[1]
+          with open(p) as f:
+              src = f.read()
+          old = '"Frameworks"\n            ]'
+          new = '"Frameworks"\n            ],\n            swiftSettings: [\n                .swiftLanguageMode(.v5)\n            ]'
+          result = src.replace(old, new, 1)
+          if result != src:
+              with open(p, "w") as f:
+                  f.write(result)
+              print("FluidAudio patched")
+          else:
+              print("FluidAudio patch target not found (may have changed)")
+          PYEOF
+          else
+            echo "FluidAudio patch not needed"
+          fi
+
+      - name: Build VoiceInk (${{ matrix.arch_name }})
+        run: |
+          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+            -derivedDataPath "$LOCAL_DERIVED_DATA" \
+            -xcconfig LocalBuild.xcconfig \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
+            ARCHS="${{ matrix.arch }}" \
+            -skipPackagePluginValidation \
+            build
+
+      # ── Package DMG ─────────────────────────────────────────────────────────
+      - name: Create DMG
+        id: dmg
+        run: |
+          DMG_NAME="VoiceInk-${VERSION}-${{ matrix.arch }}.dmg"
+          APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Debug/VoiceInk.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::VoiceInk.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          DMG_DIR=$(mktemp -d)
+          cp -R "$APP_PATH" "$DMG_DIR/"
+          ln -s /Applications "$DMG_DIR/Applications"
+          hdiutil create -volname "VoiceInk" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_NAME"
+          rm -rf "$DMG_DIR"
+
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_OUTPUT"
+
+      # ── Sign with Sparkle ───────────────────────────────────────────────────
+      - name: Sign DMG with Sparkle key
+        id: sign
+        if: env.HAS_SPARKLE_KEY == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          SPARKLE_BIN="$LOCAL_DERIVED_DATA/SourcePackages/artifacts/sparkle/Sparkle/bin"
+          if [ ! -f "$SPARKLE_BIN/sign_update" ]; then
+            echo "::warning::sign_update binary not found, skipping signing"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          SIGN_OUTPUT=$(echo "$SPARKLE_PRIVATE_KEY" \
+            | "$SPARKLE_BIN/sign_update" --ed-key-file - "${{ steps.dmg.outputs.dmg_name }}")
+
+          ED_SIGNATURE=$(echo "$SIGN_OUTPUT" | grep 'edSignature=' | sed 's/.*edSignature="\([^"]*\)".*/\1/')
+          DMG_LENGTH=$(echo "$SIGN_OUTPUT" | grep 'length=' | sed 's/.*length="\([^"]*\)".*/\1/')
+
+          echo "signature=$ED_SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "length=$DMG_LENGTH"      >> "$GITHUB_OUTPUT"
+          echo "signed=true"             >> "$GITHUB_OUTPUT"
+
+          cat > sign-metadata-${{ matrix.arch }}.json << EOF
+          {
+            "arch": "${{ matrix.arch }}",
+            "signature": "$ED_SIGNATURE",
+            "length": "$DMG_LENGTH",
+            "dmg_name": "${{ steps.dmg.outputs.dmg_name }}"
+          }
+          EOF
+
+      # ── Upload artifacts ────────────────────────────────────────────────────
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: ${{ steps.dmg.outputs.dmg_name }}
+          retention-days: 7
+
+      - name: Upload sign metadata
+        if: steps.sign.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sign-metadata-${{ matrix.arch }}
+          path: sign-metadata-${{ matrix.arch }}.json
+          retention-days: 7
+
+  # ── Publish: push patched source to main, create release ─────────────────────
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+      UPSTREAM_SHA_SHORT: ${{ needs.prepare.outputs.upstream_sha_short }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      # ── Checkout upstream and apply patches (so main shows patched source) ──
+      - name: Checkout upstream
+        uses: actions/checkout@v4
+        with:
+          repository: Beingpax/VoiceInk
+          ref: main
+          path: source
+
+      - name: Apply patches to source
+        working-directory: source
+        run: |
+          python3 << 'PYEOF'
+          import re
+
+          # LicenseViewModel.swift
+          path = "VoiceInk/Models/LicenseViewModel.swift"
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(r'@Published private\(set\) var licenseState: LicenseState = \.trial\([^)]*\)[^\n]*', '@Published private(set) var licenseState: LicenseState = .licensed', src)
+          src = re.sub(r'func startTrial\(\) \{\n(.*?\n)*?    \}', 'func startTrial() {\n    }', src)
+          src = re.sub(r'private func loadLicenseState\(\) \{\n(.*?\n)*?    \}', 'private func loadLicenseState() {\n        licenseState = .licensed\n    }', src)
+          src = re.sub(r'var canUseApp: Bool \{\n(.*?\n)*?    \}', 'var canUseApp: Bool {\n        true\n    }', src)
+          src = re.sub(r'licenseState = \.trial\(daysRemaining: trialPeriodDays\)[^\n]*', 'licenseState = .licensed', src)
+          with open(path, "w") as f:
+              f.write(src)
+          print("Patched LicenseViewModel.swift")
+
+          # MetricsView.swift
+          path = "VoiceInk/Views/MetricsView.swift"
+          with open(path) as f:
+              lines = f.readlines()
+          out, skip = [], False
+          for line in lines:
+              if '// Trial Message' in line or (not skip and 'if case .trial' in line and 'licenseViewModel' in line):
+                  skip = True; continue
+              if skip and 'Content(' in line:
+                  skip = False
+              if skip: continue
+              out.append(line)
+          with open(path, "w") as f:
+              f.writelines(out)
+          print("Patched MetricsView.swift")
+
+          # DashboardPromotionsSection.swift
+          path = "VoiceInk/Views/Metrics/DashboardPromotionsSection.swift"
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(r'(private var shouldShowUpgradePromotion: Bool \{\n).*?(\n    \})', r'\1        false\2', src, flags=re.DOTALL)
+          with open(path, "w") as f:
+              f.write(src)
+          print("Patched DashboardPromotionsSection.swift")
+
+          # LicenseManagementView.swift
+          path = "VoiceInk/Views/LicenseManagementView.swift"
+          with open(path) as f:
+              src = f.read()
+          src = src.replace('"Thank you for supporting VoiceInk"', '"An incredible voice-to-text tool by an indie developer"')
+          START = "    private var activatedContent: some View {\n"
+          END = "    private func featureItem"
+          si, ei = src.index(START), src.index(END)
+          replacement = '    private var activatedContent: some View {\n        VStack(spacing: 32) {\n            VStack(spacing: 24) {\n                HStack {\n                    Image(systemName: "heart.circle.fill")\n                        .font(.system(size: 24))\n                        .foregroundStyle(.pink)\n                    Text("Community Patched Build")\n                        .font(.headline)\n                    Spacer()\n                }\n\n                Divider()\n\n                Text("You\\\'re using an unofficial build of VoiceInk. This app is crafted by a solo indie developer who pours their heart into making voice-to-text effortless.\\\\n\\\\nIf VoiceInk has become part of your daily workflow, consider buying a license to support its continued development.")\n                    .font(.subheadline)\n                    .foregroundStyle(.secondary)\n                    .lineSpacing(4)\n\n                Button(action: {\n                    if let url = URL(string: "https://tryvoiceink.com/") {\n                        NSWorkspace.shared.open(url)\n                    }\n                }) {\n                    Label("Get VoiceInk \\u{2014} Support the Developer", systemImage: "cart.fill")\n                        .frame(maxWidth: .infinity)\n                        .padding(.vertical, 8)\n                }\n                .buttonStyle(.borderedProminent)\n            }\n            .padding(32)\n            .background(CardBackground(isSelected: false))\n            .shadow(color: .black.opacity(0.05), radius: 10)\n        }\n    }\n\n'
+          src = src[:si] + replacement + src[ei:]
+          with open(path, "w") as f:
+              f.write(src)
+          print("Patched LicenseManagementView.swift")
+
+          # Info.plist
+          import os
+          url = os.environ.get("APPCAST_LINK", "")
+          key = os.environ.get("SPARKLE_PUBLIC_KEY", "")
+          path = "VoiceInk/Info.plist"
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(r'(<key>SUFeedURL</key>\s*<string>)[^<]*(</string>)', r'\g<1>' + url + r'\2', src)
+          src = re.sub(r'(<key>SUPublicEDKey</key>\s*<string>)[^<]*(</string>)', r'\g<1>' + key + r'\2', src)
+          with open(path, "w") as f:
+              f.write(src)
+          print(f"Patched Info.plist -> {url}")
+          PYEOF
+
+          # TranscriptionPipeline.swift
+          TRANSCRIPTION_FILE=$(grep -rl 'trialExpired.*licenseViewModel' VoiceInk/ 2>/dev/null | head -1 || true)
+          if [ -n "$TRANSCRIPTION_FILE" ]; then
+            python3 - "$TRANSCRIPTION_FILE" << 'PYEOF'
+          import re, sys
+          path = sys.argv[1]
+          with open(path) as f:
+              src = f.read()
+          src = re.sub(r'\n\s*if case \.trialExpired = licenseViewModel\.licenseState \{\n.*?\}\n', '\n', src, flags=re.DOTALL)
+          with open(path, "w") as f:
+              f.write(src)
+          print(f"Patched {path}")
+          PYEOF
+          fi
+        env:
+          APPCAST_LINK: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
+          SPARKLE_PUBLIC_KEY: ${{ env.SPARKLE_PUBLIC_KEY }}
+
+      # ── Generate appcast.xml ────────────────────────────────────────────────
+      - name: Generate appcast.xml
+        working-directory: source
+        run: |
+          mkdir -p docs
+          touch docs/.nojekyll
+
+          META_FILE=""
+          for f in ../sign-metadata-arm64/sign-metadata-arm64.json ../sign-metadata-arm64.json; do
+            if [ -f "$f" ]; then META_FILE="$f"; break; fi
+          done
+
+          DOWNLOAD_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/VoiceInk-${VERSION}-arm64.dmg"
+          PUB_DATE=$(date -R)
+
+          if [ -n "$META_FILE" ]; then
+            ED_SIGNATURE=$(python3 -c "import json; d=json.load(open('$META_FILE')); print(d['signature'])")
+            DMG_LENGTH=$(python3 -c "import json; d=json.load(open('$META_FILE')); print(d['length'])")
+          else
+            ED_SIGNATURE=""
+            DMG_LENGTH="0"
+          fi
+
+          cat > docs/appcast.xml << APPCAST
+          <?xml version="1.0" standalone="yes"?>
+          <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+              <channel>
+                  <title>VoiceInk</title>
+                  <description>VoiceInk Patched Updates</description>
+                  <language>en</language>
+                  <item>
+                      <title>Version ${TAG}</title>
+                      <pubDate>${PUB_DATE}</pubDate>
+                      <enclosure
+                          url="${DOWNLOAD_URL}"
+                          sparkle:version="${VERSION}"
+                          sparkle:shortVersionString="${VERSION}-patched"
+                          sparkle:edSignature="${ED_SIGNATURE}"
+                          length="${DMG_LENGTH}"
+                          type="application/octet-stream" />
+                  </item>
+              </channel>
+          </rss>
+          APPCAST
+
+      # ── Force push patched source to main ───────────────────────────────────
+      - name: Commit and force push to main
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: patched v${VERSION} based on upstream ${UPSTREAM_SHA_SHORT}"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
+
+      # ── Create GitHub release ───────────────────────────────────────────────
+      - name: Gather upstream release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_TAG=$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+          UPSTREAM_NOTES=""
+          if [ -n "$LATEST_TAG" ]; then
+            UPSTREAM_NOTES=$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq '.body' 2>/dev/null || echo "")
+          fi
+
+          cat > release_notes.md << NOTESEOF
+          Patched release based on [upstream/main@${UPSTREAM_SHA_SHORT}](https://github.com/${UPSTREAM_REPO}/commit/${UPSTREAM_SHA}).
+
+          ## Downloads
+
+          | Build | File |
+          |-------|------|
+          | Apple Silicon (M1/M2/M3/M4) | \`VoiceInk-${VERSION}-arm64.dmg\` |
+          | Intel | \`VoiceInk-${VERSION}-x86_64.dmg\` |
+
+          ## Fork changes
+          - Trial removed — app always starts in licensed state
+          - Sparkle auto-updates pointed to this fork
+          NOTESEOF
+
+          if [ -n "$UPSTREAM_NOTES" ] && [ -n "$LATEST_TAG" ]; then
+            cat >> release_notes.md << NOTESEOF
+
+          ---
+
+          ## Upstream release notes (${LATEST_TAG})
+
+          ${UPSTREAM_NOTES}
+          NOTESEOF
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+          gh release create "$TAG" \
+            dmg-arm64/*.dmg \
+            dmg-x86_64/*.dmg \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "VoiceInk $TAG" \
+            --notes-file release_notes.md
+          echo "::notice::Release created: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
