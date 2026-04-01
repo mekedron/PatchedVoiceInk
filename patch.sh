@@ -449,23 +449,28 @@ git push origin "$TAG" --force
 echo ""
 echo "==> Gathering release notes..."
 
-UPSTREAM_NOTES=$(gh release view "v${VERSION}" --repo Beingpax/VoiceInk --json body -q .body 2>/dev/null || echo "")
-PREV_TAG=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || echo "")
-if [ -n "$PREV_TAG" ]; then
-    COMMIT_LOG=$(git log --format="- %s (\`%h\`)" "${PREV_TAG}..v${VERSION}" 2>/dev/null || echo "")
-else
-    COMMIT_LOG=$(git log --format="- %s (\`%h\`)" -30 "v${VERSION}" 2>/dev/null || echo "")
+# Find the latest version tag reachable from upstream base
+LATEST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+
+# Fetch upstream release notes for that tag
+UPSTREAM_NOTES=""
+if [ -n "$LATEST_TAG" ]; then
+    UPSTREAM_NOTES=$(gh release view "$LATEST_TAG" --repo Beingpax/VoiceInk --json body -q .body 2>/dev/null || echo "")
+fi
+
+# Commits on main after the latest tag (unreleased upstream changes)
+COMMIT_LOG=""
+if [ -n "$LATEST_TAG" ]; then
+    COMMIT_LOG=$(git log --format="- %s (\`%h\`)" "${LATEST_TAG}..HEAD~1" 2>/dev/null || echo "")
 fi
 
 NOTES_FILE=$(mktemp)
 cat > "$NOTES_FILE" << NOTESEOF
-Patched release based on upstream v${VERSION}.
+Patched release based on [upstream/main@${UPSTREAM_SHA_SHORT}](https://github.com/Beingpax/VoiceInk/commit/$UPSTREAM_SHA).
 
 ## Fork changes
 - Trial expiration removed — app always starts in licensed state
 - Sparkle auto-updates pointed to this fork
-
-Based on [Beingpax/VoiceInk@${UPSTREAM_SHA_SHORT}](https://github.com/Beingpax/VoiceInk/commit/$UPSTREAM_SHA)
 NOTESEOF
 
 if [ -n "$UPSTREAM_NOTES" ]; then
@@ -473,7 +478,7 @@ if [ -n "$UPSTREAM_NOTES" ]; then
 
 ---
 
-## Upstream release notes (v${VERSION})
+## Upstream release notes (${LATEST_TAG})
 
 ${UPSTREAM_NOTES}
 NOTESEOF
@@ -482,7 +487,7 @@ fi
 if [ -n "$COMMIT_LOG" ]; then
     cat >> "$NOTES_FILE" << NOTESEOF
 
-## Commits${PREV_TAG:+ since $PREV_TAG}
+## Unreleased upstream commits (since ${LATEST_TAG})
 
 ${COMMIT_LOG}
 NOTESEOF
