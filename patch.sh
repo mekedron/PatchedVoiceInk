@@ -239,7 +239,7 @@ replacement = """\
                         NSWorkspace.shared.open(url)
                     }
                 }) {
-                    Label("Get VoiceInk \\u2014 Support the Developer", systemImage: "cart.fill")
+                    Label("Get VoiceInk — Support the Developer", systemImage: "cart.fill")
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
