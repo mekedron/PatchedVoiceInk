@@ -195,6 +195,71 @@ with open(path, "w") as f:
 print("  Patched DashboardPromotionsSection.swift")
 PYEOF
 
+# --- LicenseManagementView.swift (support message on license tab) ---
+python3 << 'PYEOF'
+path = "VoiceInk/Views/LicenseManagementView.swift"
+with open(path) as f:
+    src = f.read()
+
+# Change hero subtitle for licensed state
+src = src.replace(
+    '"Thank you for supporting VoiceInk"',
+    '"An incredible voice-to-text tool by an indie developer"'
+)
+
+# Replace activatedContent with support message
+START = "    private var activatedContent: some View {\n"
+END = "    private func featureItem"
+
+si = src.index(START)
+ei = src.index(END)
+
+replacement = """\
+    private var activatedContent: some View {
+        VStack(spacing: 32) {
+            VStack(spacing: 24) {
+                HStack {
+                    Image(systemName: "heart.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.pink)
+                    Text("Community Patched Build")
+                        .font(.headline)
+                    Spacer()
+                }
+
+                Divider()
+
+                Text("You're using an unofficial build of VoiceInk. This app is crafted by a solo indie developer who pours their heart into making voice-to-text effortless.\\n\\nIf VoiceInk has become part of your daily workflow, consider buying a license to support its continued development.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+
+                Button(action: {
+                    if let url = URL(string: "https://tryvoiceink.com/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }) {
+                    Label("Get VoiceInk \\u2014 Support the Developer", systemImage: "cart.fill")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(32)
+            .background(CardBackground(isSelected: false))
+            .shadow(color: .black.opacity(0.05), radius: 10)
+        }
+    }
+
+"""
+
+src = src[:si] + replacement + src[ei:]
+
+with open(path, "w") as f:
+    f.write(src)
+print("  Patched LicenseManagementView.swift")
+PYEOF
+
 # --- Info.plist (text-based replacement — preserves key ordering) ---
 python3 - "$APPCAST_LINK" "$SPARKLE_PUBLIC_KEY" << 'PYEOF'
 import re, sys

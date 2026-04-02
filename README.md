@@ -63,6 +63,7 @@ That's it. The script handles everything: syncing upstream, applying patches, bu
 | `TranscriptionPipeline.swift` | Remove `trialExpired` message prepended to transcriptions |
 | `MetricsView.swift` | Remove trial/expired banner UI |
 | `DashboardPromotionsSection.swift` | `shouldShowUpgradePromotion` → `false` |
+| `LicenseManagementView.swift` | Replace license status with support message linking to tryvoiceink.com |
 | `Info.plist` | `SUFeedURL` + `SUPublicEDKey` → fork values (2-line diff) |
 
 ## Release naming
