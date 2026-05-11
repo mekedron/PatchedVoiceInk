@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.info.outputs.version }}
+      build_number: ${{ steps.info.outputs.build_number }}
       tag: ${{ steps.info.outputs.tag }}
       upstream_sha: ${{ steps.info.outputs.upstream_sha }}
       upstream_sha_short: ${{ steps.info.outputs.upstream_sha_short }}
@@ -41,6 +42,8 @@ jobs:
           UPSTREAM_SHA_SHORT=$(git rev-parse --short HEAD)
           VERSION=$(grep 'MARKETING_VERSION' VoiceInk.xcodeproj/project.pbxproj \
             | head -1 | grep -oE '[0-9]+\.[0-9]+[0-9.]*')
+          PROJECT_VERSION=$(grep 'CURRENT_PROJECT_VERSION' VoiceInk.xcodeproj/project.pbxproj \
+            | head -1 | grep -oE '[0-9]+')
           TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
@@ -50,12 +53,25 @@ jobs:
             echo "already_released=false" >> "$GITHUB_OUTPUT"
           fi
 
+          # Count existing patched releases for this MARKETING_VERSION so
+          # repeated builds against the same upstream version get monotonically
+          # increasing CFBundleVersion / sparkle:version values (176.1, 176.2,
+          # 176.3, ...). Sparkle compares segment-by-segment, so [176, N+1]
+          # always wins over [176, N].
+          VERSION_RE=${VERSION//./\\.}
+          EXISTING_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name | test(\"^v${VERSION_RE}-.*-patched$\")) | .tag_name" \
+            | wc -l | tr -d ' ')
+          SEQ=$((EXISTING_COUNT + 1))
+          BUILD_NUMBER="${PROJECT_VERSION}.${SEQ}"
+
           echo "version=$VERSION"               >> "$GITHUB_OUTPUT"
+          echo "build_number=$BUILD_NUMBER"      >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"                        >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$UPSTREAM_SHA"      >> "$GITHUB_OUTPUT"
           echo "upstream_sha_short=$UPSTREAM_SHA_SHORT" >> "$GITHUB_OUTPUT"
 
-          echo "Version: $VERSION | Tag: $TAG | Upstream: $UPSTREAM_SHA_SHORT"
+          echo "Version: $VERSION | Build: $BUILD_NUMBER (seq $SEQ) | Tag: $TAG | Upstream: $UPSTREAM_SHA_SHORT"
 
   # ── Build for each architecture ──────────────────────────────────────────────
   build:
@@ -74,6 +90,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
       TAG: ${{ needs.prepare.outputs.tag }}
       UPSTREAM_SHA_SHORT: ${{ needs.prepare.outputs.upstream_sha_short }}
       HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY != '' }}
@@ -358,6 +375,7 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
             ARCHS="${{ matrix.arch }}" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             -skipPackagePluginValidation \
             build
 
@@ -438,6 +456,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
       TAG: ${{ needs.prepare.outputs.tag }}
       UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
       UPSTREAM_SHA_SHORT: ${{ needs.prepare.outputs.upstream_sha_short }}
@@ -578,7 +597,7 @@ jobs:
                       <pubDate>${PUB_DATE}</pubDate>
                       <enclosure
                           url="${DOWNLOAD_URL}"
-                          sparkle:version="${VERSION}"
+                          sparkle:version="${BUILD_NUMBER}"
                           sparkle:shortVersionString="${VERSION}-patched"
                           sparkle:edSignature="${ED_SIGNATURE}"
                           length="${DMG_LENGTH}"
