@@ -108,6 +108,13 @@ jobs:
           repository: Beingpax/VoiceInk
           ref: main
 
+      - name: Checkout fork patches (supplemental Swift sources)
+        uses: actions/checkout@v4
+        with:
+          path: fork-tools
+          sparse-checkout: |
+            patches
+
       # ── Apply all patches ────────────────────────────────────────────────────
       - name: "Patch: LicenseViewModel.swift"
         run: |
@@ -303,6 +310,26 @@ jobs:
           print(f"  Patched Info.plist -> {url}")
           PYEOF
 
+      - name: "Patch: LaunchPermissionMonitor + AppDelegate"
+        run: |
+          cp fork-tools/patches/LaunchPermissionMonitor.swift VoiceInk/LaunchPermissionMonitor.swift
+          echo "  Copied LaunchPermissionMonitor.swift"
+          python3 << 'PYEOF'
+          import re
+          path = "VoiceInk/AppDelegate.swift"
+          with open(path) as f:
+              src = f.read()
+          src, n = re.subn(
+              r'(menuBarManager\?\.applyActivationPolicy\(\))',
+              r'\1\n        LaunchPermissionMonitor.shared.bootstrap()',
+              src, count=1
+          )
+          assert n == 1, "AppDelegate.swift anchor not found"
+          with open(path, "w") as f:
+              f.write(src)
+          print("  Patched AppDelegate.swift")
+          PYEOF
+
       - name: Summary of patches
         run: echo "All patches applied successfully"
 
@@ -472,6 +499,13 @@ jobs:
           ref: main
           path: source
 
+      - name: Checkout fork patches (supplemental Swift sources)
+        uses: actions/checkout@v4
+        with:
+          path: fork-tools
+          sparse-checkout: |
+            patches
+
       - name: Apply patches to source
         working-directory: source
         run: |
@@ -558,6 +592,27 @@ jobs:
           print(f"Patched {path}")
           PYEOF
           fi
+
+          # LaunchPermissionMonitor.swift (drop in supplemental Swift source)
+          cp ../fork-tools/patches/LaunchPermissionMonitor.swift VoiceInk/LaunchPermissionMonitor.swift
+          echo "Copied LaunchPermissionMonitor.swift"
+
+          # AppDelegate.swift (wire launch permission monitor)
+          python3 << 'PYEOF'
+          import re
+          path = "VoiceInk/AppDelegate.swift"
+          with open(path) as f:
+              src = f.read()
+          src, n = re.subn(
+              r'(menuBarManager\?\.applyActivationPolicy\(\))',
+              r'\1\n        LaunchPermissionMonitor.shared.bootstrap()',
+              src, count=1
+          )
+          assert n == 1, "AppDelegate.swift anchor not found"
+          with open(path, "w") as f:
+              f.write(src)
+          print("Patched AppDelegate.swift")
+          PYEOF
         env:
           APPCAST_LINK: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
           SPARKLE_PUBLIC_KEY: ${{ env.SPARKLE_PUBLIC_KEY }}
