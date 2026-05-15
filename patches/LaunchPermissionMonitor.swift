@@ -118,6 +118,12 @@ final class LaunchPermissionMonitor: ObservableObject {
         alertWindow = nil
     }
 
+    /// Slide the alert window to the left edge so System Settings prompts are
+    /// visible. Called when the user clicks Grant or Recheck.
+    func moveAlertAside() {
+        alertWindow?.moveAside()
+    }
+
     // MARK: - Checks (side-effect-free)
 
     static var isMicrophoneGranted: Bool {
@@ -201,10 +207,10 @@ final class LaunchPermissionMonitor: ObservableObject {
 final class LaunchPermissionAlertWindow: NSWindow {
     init(monitor: LaunchPermissionMonitor) {
         let rootView = LaunchPermissionAlertView(monitor: monitor)
-        let hosting = NSHostingView(rootView: rootView)
+        let hosting = DragSafeHostingView(rootView: rootView)
 
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 760),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -218,6 +224,69 @@ final class LaunchPermissionAlertWindow: NSWindow {
         contentView = hosting
         center()
     }
+
+    /// Slide the window to the left edge of the visible screen so System
+    /// Settings prompts (typically centered) are not occluded.
+    func moveAside() {
+        guard let screen = screen ?? NSScreen.main else { return }
+        var f = self.frame
+        f.origin.x = screen.visibleFrame.minX + 20
+        setFrame(f, display: true, animate: true)
+    }
+}
+
+// MARK: - Hosting view
+
+/// Disables window dragging when the cursor is over an interactive control,
+/// so clicks on buttons land on the button instead of starting a drag.
+final class DragSafeHostingView<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        if let hit, Self.isInteractiveControl(hit) {
+            window?.isMovableByWindowBackground = false
+        } else {
+            window?.isMovableByWindowBackground = true
+        }
+        return hit
+    }
+
+    private static func isInteractiveControl(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        for _ in 0..<6 {
+            guard let v = current else { break }
+            if v is NSButton || v is NSTextField || v is NSSlider
+                || v is NSSegmentedControl || v is NSPopUpButton
+                || v is NSSecureTextField || v is NSStepper {
+                return true
+            }
+            current = v.superview
+        }
+        return false
+    }
+}
+
+// MARK: - Button style
+
+/// Stays accent-colored even when the window is inactive — `.borderedProminent`
+/// dims to a flat translucent style when the window loses key, which makes the
+/// Grant button nearly invisible after System Settings steals focus.
+struct AlwaysProminentButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .foregroundStyle(.white)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isEnabled ? Color.accentColor : Color.accentColor.opacity(0.5))
+                    .opacity(configuration.isPressed ? 0.8 : 1.0)
+            )
+    }
 }
 
 // MARK: - View
@@ -226,41 +295,49 @@ private struct LaunchPermissionAlertView: View {
     @ObservedObject var monitor: LaunchPermissionMonitor
     @AppStorage("suppressLaunchPermissionAlert") private var suppressAlert = false
 
+    @State private var microphonePending = false
+    @State private var accessibilityPending = false
+    @State private var screenRecordingPending = false
+    @State private var automationPending = false
+
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             header
+
+            firstTimeNotice
 
             VStack(spacing: 10) {
                 row(
                     title: "Microphone",
                     description: "Required to record audio for transcription.",
                     icon: "mic.fill",
-                    granted: monitor.states.microphone,
-                    action: { monitor.requestMicrophone() }
+                    isGranted: { monitor.states.microphone },
+                    pending: $microphonePending,
+                    request: { monitor.requestMicrophone() }
                 )
-
                 row(
                     title: "Accessibility",
                     description: "Required to paste transcribed text at the cursor and read selected text.",
                     icon: "hand.raised.fill",
-                    granted: monitor.states.accessibility,
-                    action: { monitor.requestAccessibility() }
+                    isGranted: { monitor.states.accessibility },
+                    pending: $accessibilityPending,
+                    request: { monitor.requestAccessibility() }
                 )
-
                 row(
                     title: "Screen Recording",
                     description: "Used by AI Enhancement to read on-screen context from the active window.",
                     icon: "rectangle.on.rectangle",
-                    granted: monitor.states.screenRecording,
-                    action: { monitor.requestScreenRecording() }
+                    isGranted: { monitor.states.screenRecording },
+                    pending: $screenRecordingPending,
+                    request: { monitor.requestScreenRecording() }
                 )
-
                 row(
                     title: "Automation",
-                    description: "Used to detect the active browser URL and as an AppleScript paste fallback. Browsers are prompted individually on first use.",
+                    description: "Used to detect the active browser URL and as an AppleScript paste fallback.",
                     icon: "applescript.fill",
-                    granted: monitor.states.automation,
-                    action: { monitor.requestAutomation() }
+                    isGranted: { monitor.states.automation },
+                    pending: $automationPending,
+                    request: { monitor.requestAutomation() }
                 )
             }
 
@@ -281,14 +358,14 @@ private struct LaunchPermissionAlertView: View {
             }
         }
         .padding(24)
-        .frame(width: 480, height: 620)
+        .frame(width: 540, height: 760)
         .onAppear { monitor.refreshAll() }
     }
 
     private var header: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 40))
+                .font(.system(size: 36))
                 .foregroundStyle(.orange)
             Text("Permissions Needed")
                 .font(.title2)
@@ -301,14 +378,63 @@ private struct LaunchPermissionAlertView: View {
         }
     }
 
+    private var firstTimeNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("First time on this build?", systemImage: "info.circle.fill")
+                .font(.subheadline.bold())
+                .foregroundStyle(.orange)
+
+            Text("This is a community-patched build. Because it is signed with a different certificate than the official VoiceInk, macOS treats it as a different app — your existing permissions don't carry over.")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                step("1.", "Open System Settings → Privacy & Security.")
+                step("2.", "In each list below (Microphone, Accessibility, Screen Recording), find the existing VoiceInk entry and remove it with the “–” button.")
+                step("3.", "Click Grant on each row here. macOS will re-add this build with the correct signature.")
+                step("4.", "Automation has no “–” button. If a paste or browser-URL action fails after granting, run this in Terminal to clear the cached entry, then click Grant again:")
+                Text("tccutil reset AppleEvents com.prakashjoshipax.voiceink")
+                    .font(.system(.caption, design: .monospaced))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.07))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(.leading, 22)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    private func step(_ num: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(num)
+                .font(.caption.bold().monospacedDigit())
+                .foregroundStyle(.orange)
+                .frame(width: 16, alignment: .leading)
+            Text(text)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private func row(
         title: String,
         description: String,
         icon: String,
-        granted: Bool,
-        action: @escaping () -> Void
+        isGranted: @escaping () -> Bool,
+        pending: Binding<Bool>,
+        request: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 14) {
+        let granted = isGranted()
+        return HStack(spacing: 14) {
             Image(systemName: icon)
                 .font(.system(size: 18))
                 .foregroundStyle(granted ? .green : .orange)
@@ -329,10 +455,24 @@ private struct LaunchPermissionAlertView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.title3)
+            } else if pending.wrappedValue {
+                Button("Recheck") {
+                    monitor.refreshAll()
+                    if isGranted() {
+                        pending.wrappedValue = false
+                    } else {
+                        monitor.moveAlertAside()
+                        request()
+                    }
+                }
+                .buttonStyle(AlwaysProminentButtonStyle())
             } else {
-                Button("Grant", action: action)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                Button("Grant") {
+                    pending.wrappedValue = true
+                    monitor.moveAlertAside()
+                    request()
+                }
+                .buttonStyle(AlwaysProminentButtonStyle())
             }
         }
         .padding(12)
