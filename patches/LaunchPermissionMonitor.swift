@@ -1,7 +1,10 @@
 // Injected by patch.sh from the `patch` branch.
 // Provides a clipslop-style launch-time permission alert that re-checks
-// Microphone, Accessibility, Screen Recording, and Automation permissions
-// on every launch and on app re-activation.
+// Microphone, Accessibility, and Screen Recording permissions on every launch
+// and on app re-activation. Automation is intentionally excluded — on this
+// patched build there is no reliable way to fix a broken automation entry from
+// the UI (System Settings has no “–” button for Automation), so it would only
+// surface a Grant button that can't actually fix anything.
 
 import AppKit
 import SwiftUI
@@ -15,10 +18,9 @@ struct LaunchPermissionStates: Equatable {
     var microphone: Bool = false
     var accessibility: Bool = false
     var screenRecording: Bool = false
-    var automation: Bool = false
 
     var allGranted: Bool {
-        microphone && accessibility && screenRecording && automation
+        microphone && accessibility && screenRecording
     }
 
     var anyMissing: Bool { !allGranted }
@@ -82,8 +84,7 @@ final class LaunchPermissionMonitor: ObservableObject {
         let newStates = LaunchPermissionStates(
             microphone: Self.isMicrophoneGranted,
             accessibility: Self.isAccessibilityGranted,
-            screenRecording: Self.isScreenRecordingGranted,
-            automation: Self.isAutomationGranted
+            screenRecording: Self.isScreenRecordingGranted
         )
         if newStates != states {
             states = newStates
@@ -138,26 +139,6 @@ final class LaunchPermissionMonitor: ObservableObject {
         CGPreflightScreenCaptureAccess()
     }
 
-    /// Automation status is queried against System Events — the single target
-    /// used by VoiceInk's AppleScript paste fallback and `osascript`-based
-    /// browser URL detection. macOS has no surface to inspect Automation status
-    /// for arbitrary targets without prompting, so per-browser checks are not
-    /// attempted here.
-    static var isAutomationGranted: Bool {
-        determineAutomationPermission(bundleID: "com.apple.systemevents", askUser: false) == noErr
-    }
-
-    private static func determineAutomationPermission(bundleID: String, askUser: Bool) -> OSStatus {
-        var desc = AEAddressDesc()
-        let bytes = Array(bundleID.utf8)
-        let createStatus: OSErr = bytes.withUnsafeBufferPointer { ptr in
-            AECreateDesc(typeApplicationBundleID, ptr.baseAddress, ptr.count, &desc)
-        }
-        guard createStatus == noErr else { return OSStatus(createStatus) }
-        defer { AEDisposeDesc(&desc) }
-        return AEDeterminePermissionToAutomateTarget(&desc, typeWildCard, typeWildCard, askUser)
-    }
-
     // MARK: - Requests
 
     func requestMicrophone() {
@@ -184,17 +165,6 @@ final class LaunchPermissionMonitor: ObservableObject {
         openPrivacyPane("Privacy_ScreenCapture")
     }
 
-    func requestAutomation() {
-        let status = Self.determineAutomationPermission(
-            bundleID: "com.apple.systemevents",
-            askUser: true
-        )
-        if status != noErr {
-            openPrivacyPane("Privacy_Automation")
-        }
-        refreshAndMaybeDismiss()
-    }
-
     private func openPrivacyPane(_ anchor: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
             NSWorkspace.shared.open(url)
@@ -210,7 +180,7 @@ final class LaunchPermissionAlertWindow: NSWindow {
         let hosting = DragSafeHostingView(rootView: rootView)
 
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 660),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -298,7 +268,6 @@ private struct LaunchPermissionAlertView: View {
     @State private var microphonePending = false
     @State private var accessibilityPending = false
     @State private var screenRecordingPending = false
-    @State private var automationPending = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -331,14 +300,6 @@ private struct LaunchPermissionAlertView: View {
                     pending: $screenRecordingPending,
                     request: { monitor.requestScreenRecording() }
                 )
-                row(
-                    title: "Automation",
-                    description: "Used to detect the active browser URL and as an AppleScript paste fallback.",
-                    icon: "applescript.fill",
-                    isGranted: { monitor.states.automation },
-                    pending: $automationPending,
-                    request: { monitor.requestAutomation() }
-                )
             }
 
             Spacer(minLength: 0)
@@ -358,7 +319,7 @@ private struct LaunchPermissionAlertView: View {
             }
         }
         .padding(24)
-        .frame(width: 540, height: 760)
+        .frame(width: 540, height: 660)
         .onAppear { monitor.refreshAll() }
     }
 
@@ -392,16 +353,22 @@ private struct LaunchPermissionAlertView: View {
                 step("1.", "Open System Settings → Privacy & Security.")
                 step("2.", "In each list below (Microphone, Accessibility, Screen Recording), find the existing VoiceInk entry and remove it with the “–” button.")
                 step("3.", "Click Grant on each row here. macOS will re-add this build with the correct signature.")
-                step("4.", "Automation has no “–” button. If a paste or browser-URL action fails after granting, run this in Terminal to clear the cached entry, then click Grant again:")
-                Text("tccutil reset AppleEvents com.prakashjoshipax.voiceink")
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.black.opacity(0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(.leading, 22)
-                    .textSelection(.enabled)
             }
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Text("Automation (used for the AppleScript paste fallback and browser-URL detection) is handled separately — macOS prompts for it on first use. If you upgraded from the official build and that prompt never appears, run this in Terminal once, then relaunch VoiceInk:")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("tccutil reset AppleEvents com.prakashjoshipax.voiceink")
+                .font(.system(.caption, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .textSelection(.enabled)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
