@@ -370,7 +370,7 @@ private struct LaunchPermissionAlertView: View {
             Text("Permissions Needed")
                 .font(.title2)
                 .fontWeight(.semibold)
-            Text("VoiceInk needs the following access to work correctly. Click Grant to open the system prompt or settings.")
+            Text("VoiceInk needs the following access to work properly. Click Grant to open the system prompt or settings.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
