@@ -74,6 +74,11 @@ git fetch upstream
 STASH_DIR=$(mktemp -d)
 git show main:docs/appcast.xml > "$STASH_DIR/appcast.xml" 2>/dev/null || true
 
+# Stash supplemental Swift sources from the patch branch working tree
+# (the branch guard above ensures we're on `patch` with these files present)
+mkdir -p "$STASH_DIR/patches"
+cp patches/LaunchPermissionMonitor.swift "$STASH_DIR/patches/LaunchPermissionMonitor.swift"
+
 # ── Switch to main and reset to upstream ──────────────────────────────────────
 echo ""
 echo "==> Resetting main to upstream/main..."
@@ -280,6 +285,27 @@ src = re.sub(
 with open(path, "w") as f:
     f.write(src)
 print("  Patched Info.plist")
+PYEOF
+
+# --- Launch permission monitor (drop in supplemental Swift source) ---
+cp "$STASH_DIR/patches/LaunchPermissionMonitor.swift" VoiceInk/LaunchPermissionMonitor.swift
+echo "  Copied LaunchPermissionMonitor.swift"
+
+# --- AppDelegate.swift (wire launch permission monitor) ---
+python3 << 'PYEOF'
+import re
+path = "VoiceInk/AppDelegate.swift"
+with open(path) as f:
+    src = f.read()
+src, n = re.subn(
+    r'(menuBarManager\?\.applyActivationPolicy\(\))',
+    r'\1\n        LaunchPermissionMonitor.shared.bootstrap()',
+    src, count=1
+)
+assert n == 1, "AppDelegate.swift anchor not found"
+with open(path, "w") as f:
+    f.write(src)
+print("  Patched AppDelegate.swift")
 PYEOF
 
 echo "==> All patches applied"
