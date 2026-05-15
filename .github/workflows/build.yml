@@ -9,6 +9,10 @@ on:
         description: "Skip whisper.xcframework cache"
         type: boolean
         default: false
+      force_rebuild:
+        description: "Force a re-release of the current upstream SHA (appends -rN suffix to tag)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -44,11 +48,26 @@ jobs:
             | head -1 | grep -oE '[0-9]+\.[0-9]+[0-9.]*')
           PROJECT_VERSION=$(grep 'CURRENT_PROJECT_VERSION' VoiceInk.xcodeproj/project.pbxproj \
             | head -1 | grep -oE '[0-9]+')
-          TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
+          BASE_TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
+          TAG="$BASE_TAG"
+          FORCE_REBUILD="${{ inputs.force_rebuild }}"
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
-            echo "already_released=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Release $TAG already exists, skipping"
+            if [ "$FORCE_REBUILD" = "true" ]; then
+              # Find next available -rN suffix so the new release gets its own
+              # tag and release page (Sparkle CFBundleVersion increments via
+              # BUILD_NUMBER below, so installed clients still see it as newer).
+              SUFFIX=2
+              while gh release view "${BASE_TAG}-r${SUFFIX}" --repo "$GITHUB_REPOSITORY" &>/dev/null; do
+                SUFFIX=$((SUFFIX + 1))
+              done
+              TAG="${BASE_TAG}-r${SUFFIX}"
+              echo "already_released=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Force rebuild requested — using new tag $TAG"
+            else
+              echo "already_released=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Release $BASE_TAG already exists, skipping (use workflow_dispatch with force_rebuild=true to re-release)"
+            fi
           else
             echo "already_released=false" >> "$GITHUB_OUTPUT"
           fi
@@ -57,10 +76,11 @@ jobs:
           # repeated builds against the same upstream version get monotonically
           # increasing CFBundleVersion / sparkle:version values (176.1, 176.2,
           # 176.3, ...). Sparkle compares segment-by-segment, so [176, N+1]
-          # always wins over [176, N].
+          # always wins over [176, N]. Regex matches both bare `-patched` and
+          # `-patched-rN` variants so re-releases also bump the count.
           VERSION_RE=${VERSION//./\\.}
           EXISTING_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name | test(\"^v${VERSION_RE}-.*-patched$\")) | .tag_name" \
+            --jq ".[] | select(.tag_name | test(\"^v${VERSION_RE}-.*-patched(-r[0-9]+)?$\")) | .tag_name" \
             | wc -l | tr -d ' ')
           SEQ=$((EXISTING_COUNT + 1))
           BUILD_NUMBER="${PROJECT_VERSION}.${SEQ}"
