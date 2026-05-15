@@ -2,51 +2,49 @@
 
 Personal fork of [Beingpax/VoiceInk](https://github.com/Beingpax/VoiceInk) with trial removed and Sparkle auto-updates pointed to this fork.
 
+## Is this safe?
+
+Yes. This fork is fully transparent:
+
+- **Patch source code is open.** Every patch applied to the upstream code is defined in [`patch.sh`](patch.sh) on this branch and in the [GitHub Actions workflow](.github/workflows/build.yml). You can read exactly what is changed.
+- **Builds happen only via GitHub Actions.** No local machines are involved in producing release binaries. The DMGs you download are built by GitHub-hosted runners from the public workflow — the build logs are visible to everyone.
+- **`main` branch shows the patched source.** You can browse the [`main`](../../tree/main) branch to see the exact code that was compiled into the release, one commit ahead of upstream.
+
+If you want to verify: compare [`main`](../../tree/main) against [upstream](https://github.com/Beingpax/VoiceInk) — the diff is only the patches listed below.
+
 ## How it works
 
-The `main` branch always contains exactly **1 commit ahead** of upstream — just the patched source code ready for release. No build scripts live on `main`.
+- **`main`** branch contains exactly **1 commit ahead** of upstream — the patched source code, `docs/appcast.xml`, and nothing else. This is what gets built into releases.
+- **`patch`** (default branch) holds the build script, workflow, and this README. It never changes during releases.
 
-This `patch` branch holds only the build script. It checks out `main`, resets to upstream, applies patches, builds, and returns here.
+Every Monday at 10:00 UTC (or on manual trigger), GitHub Actions:
+1. Checks if upstream has new commits since the last release
+2. Applies patches, builds for Apple Silicon and Intel
+3. Force pushes the patched source to `main`
+4. Creates a GitHub release with both DMGs
 
-## Prerequisites
-
-- **Xcode 26+**
-- **`gh`** CLI — authenticated (`gh auth login`)
-- **`op`** CLI — 1Password, signed in (`op signin`)
-- **GitHub Pages** enabled on fork (Settings → Pages → Source: main, /docs)
-
-The whisper.xcframework is auto-built on first run.
-
-## Usage
+## Local build (optional)
 
 ```bash
-# 1. Make sure you're on the patch branch
 git checkout patch
-
-# 2. Build and test
-./patch.sh
-
-# 3. Test the app
-open ~/Downloads/VoiceInk.app
-
-# 4. Publish release
-./patch.sh --release
+./patch.sh            # build and test
+./patch.sh --release  # sign and publish
 ```
 
-That's it. The script handles everything: syncing upstream, applying patches, building, signing, tagging, and creating the GitHub release.
+Requires Xcode 26+, `gh` CLI, and `op` CLI (1Password) for Sparkle signing. The whisper.xcframework is auto-built on first run.
 
-## What the script does
+### What the script does
 
-### `./patch.sh` (build)
+**`./patch.sh` (build)**
 
 1. Fetches latest `upstream/main`
 2. Switches to `main` and resets to upstream
-3. Applies code patches (license bypass, Sparkle URLs)
+3. Applies code patches (license bypass, Sparkle URLs, launch permission monitor)
 4. Commits as a WIP on `main`
 5. Builds app + DMG
 6. Returns to `patch` branch
 
-### `./patch.sh --release` (publish)
+**`./patch.sh --release` (publish)**
 
 1. Switches to `main` (with WIP commit from build step)
 2. Signs DMG with Sparkle key from 1Password
@@ -59,12 +57,13 @@ That's it. The script handles everything: syncing upstream, applying patches, bu
 
 | File | Change |
 |------|--------|
-| `LicenseViewModel.swift` | Default state → `.licensed`, empty `startTrial()`, `canUseApp` → `true` |
+| `LicenseViewModel.swift` | Default state -> `.licensed`, empty `startTrial()`, `canUseApp` -> `true` |
 | `TranscriptionPipeline.swift` | Remove `trialExpired` message prepended to transcriptions |
 | `MetricsView.swift` | Remove trial/expired banner UI |
-| `DashboardPromotionsSection.swift` | `shouldShowUpgradePromotion` → `false` |
+| `DashboardPromotionsSection.swift` | `shouldShowUpgradePromotion` -> `false` |
 | `LicenseManagementView.swift` | Replace license status with support message linking to tryvoiceink.com |
-| `Info.plist` | `SUFeedURL` + `SUPublicEDKey` → fork values (2-line diff) |
+| `Info.plist` | `SUFeedURL` + `SUPublicEDKey` -> fork values |
+| `AppDelegate.swift` + `LaunchPermissionMonitor.swift` (new) | Re-prompt for Microphone, Accessibility, and Screen Recording on every launch since the patched build's signature differs from the official one |
 
 ## Release naming
 
