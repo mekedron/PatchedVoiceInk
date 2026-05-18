@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+    <channel>
+        <title>VoiceInk</title>
+        <description>VoiceInk Patched Updates</description>
+        <language>en</language>
+        <item>
+            <title>Version v1.77-f3bae28-patched</title>
+            <pubDate>Mon, 18 May 2026 11:18:45 +0000</pubDate>
+            <enclosure
+                url="https://github.com/mekedron/PatchedVoiceInk/releases/download/v1.77-f3bae28-patched/VoiceInk-1.77-arm64.dmg"
+                sparkle:version="177.1"
+                sparkle:shortVersionString="1.77-patched"
+                sparkle:edSignature="hV+EBqCsJ4d/QpWjuxyG1OIo5zg2GudhSjjFMff5UD7iuYfbiF1Bpr1d5aps4GPBS1Pqg2I4YJGY/xYy0UztBw=="
+                length="19513006"
+                type="application/octet-stream" />
+        </item>
+    </channel>
+</rss>
