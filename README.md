@@ -72,19 +72,19 @@ The whisper.xcframework is auto-built on first run and cached in `~/VoiceInk-Dep
 5. Force pushes `main`, creates GitHub release with upstream notes
 6. Returns to `patch` branch
 
-> **Heads up:** the patch regexes live in **two places** — `patch.sh` and `.github/workflows/build.yml`. If you change a patch in one, mirror it in the other or CI and local builds will diverge. The supplemental Swift sources in `patches/` are deduplicated and copied by both.
+> **Heads up:** the patch regexes live in **three copies across two files** — once in `patch.sh`, and twice in `.github/workflows/build.yml` (the `build` job applies them per-arch, the `publish` job re-applies them to push patched source to `main`). If you change a patch, mirror it in all three or CI and local builds will diverge. The supplemental Swift sources in `patches/` are the single source of truth and are copied by both.
 
 ## Patches applied
 
 | File | Change |
 |------|--------|
-| `LicenseViewModel.swift` | Default state -> `.licensed`, empty `startTrial()`, `canUseApp` -> `true` |
-| `TranscriptionPipeline.swift` | Remove `trialExpired` message prepended to transcriptions |
-| `MetricsView.swift` | Remove trial/expired banner UI |
-| `DashboardPromotionsSection.swift` | `shouldShowUpgradePromotion` -> `false` |
-| `LicenseManagementView.swift` | Replace license status with support message linking to tryvoiceink.com |
-| `Info.plist` | `SUFeedURL` + `SUPublicEDKey` -> fork values |
+| Licensing — `LicenseViewModel.swift` + every build compiled with `LOCAL_BUILD` | Upstream's own `#if LOCAL_BUILD` branch forces `licenseState = .licensed` (and bypasses the license keychain / CloudKit). Our builds define `LOCAL_BUILD`, so the app always starts licensed. The `LicenseViewModel` regexes (`loadLicenseState`/`canUseApp` → licensed/`true`) are kept as defense-in-depth. |
+| `Views/Dashboard/DashboardPromotionsSection.swift` | `shouldShowPromotions` → `false`, hiding **all** dashboard promo cards (the upgrade nag and the newer affiliate-program card) |
+| `Views/LicenseManagementView.swift` | Inject a "Community Patched Build" support card at the top of the licensed `activeContent`, linking to tryvoiceink.com |
+| `Info.plist` | `SUFeedURL` + `SUPublicEDKey` → fork values |
 | `AppDelegate.swift` (modified) + `LaunchPermissionMonitor.swift` (new, copied from `patches/`) | Re-prompt for Microphone, Accessibility, and Screen Recording on every launch — the patched build's signature differs from the official one, so existing permission grants don't transfer |
+
+The trial/expired banner and the `trialExpired` transcription notice are no longer patched out explicitly: in the forced-licensed state upstream already renders nothing for them, so those patches were dropped (the `TranscriptionPipeline` step now soft-skips). The cosmetic patches above **soft-fail** — if a future upstream refactor moves an anchor, the step prints a warning and continues instead of breaking the release.
 
 ## Release naming
 

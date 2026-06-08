@@ -74,10 +74,12 @@ git fetch upstream
 STASH_DIR=$(mktemp -d)
 git show main:docs/appcast.xml > "$STASH_DIR/appcast.xml" 2>/dev/null || true
 
-# Stash supplemental Swift sources from the patch branch working tree
-# (the branch guard above ensures we're on `patch` with these files present)
+# Stash the patch toolkit from the patch branch working tree, since the next
+# step checks out `main` (where these files don't exist). The branch guard above
+# ensures we're on `patch` with these files present. `apply.py` is the single
+# source of truth for every patch — see also .github/workflows/build.yml.
 mkdir -p "$STASH_DIR/patches"
-cp patches/LaunchPermissionMonitor.swift "$STASH_DIR/patches/LaunchPermissionMonitor.swift"
+cp patches/apply.py patches/LaunchPermissionMonitor.swift "$STASH_DIR/patches/"
 
 # ── Switch to main and reset to upstream ──────────────────────────────────────
 echo ""
@@ -97,218 +99,12 @@ TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
 DMG_NAME="VoiceInk-${VERSION}.dmg"
 echo "==> Version: $VERSION  Tag: $TAG  Based on: $UPSTREAM_SHA_SHORT"
 
-# ── Apply patches ─────────────────────────────────────────────────────────────
+# ── Apply patches (single source of truth: patches/apply.py) ──────────────────
+# apply.py was stashed alongside LaunchPermissionMonitor.swift before we checked
+# out `main`; it runs against the current working tree (the upstream source).
 echo ""
-echo "==> Applying patches..."
-
-# --- LicenseViewModel.swift ---
-python3 << 'PYEOF'
-import re
-
-path = "VoiceInk/Models/LicenseViewModel.swift"
-with open(path) as f:
-    src = f.read()
-
-src = re.sub(
-    r'@Published private\(set\) var licenseState: LicenseState = \.trial\([^)]*\)[^\n]*',
-    '@Published private(set) var licenseState: LicenseState = .licensed',
-    src
-)
-src = re.sub(
-    r'func startTrial\(\) \{\n(.*?\n)*?    \}',
-    'func startTrial() {\n    }',
-    src
-)
-src = re.sub(
-    r'private func loadLicenseState\(\) \{\n(.*?\n)*?    \}',
-    'private func loadLicenseState() {\n        licenseState = .licensed\n    }',
-    src
-)
-src = re.sub(
-    r'var canUseApp: Bool \{\n(.*?\n)*?    \}',
-    'var canUseApp: Bool {\n        true\n    }',
-    src
-)
-src = re.sub(
-    r'licenseState = \.trial\(daysRemaining: trialPeriodDays\)[^\n]*',
-    'licenseState = .licensed',
-    src
-)
-
-with open(path, "w") as f:
-    f.write(src)
-print("  Patched LicenseViewModel.swift")
-PYEOF
-
-# --- TranscriptionPipeline.swift (search entire VoiceInk/ tree) ---
-TRANSCRIPTION_FILE=$(grep -rl 'trialExpired.*licenseViewModel' VoiceInk/ 2>/dev/null | head -1 || true)
-if [ -n "$TRANSCRIPTION_FILE" ]; then
-    python3 - "$TRANSCRIPTION_FILE" << 'PYEOF'
-import re, sys
-path = sys.argv[1]
-with open(path) as f:
-    src = f.read()
-src = re.sub(
-    r'\n\s*if case \.trialExpired = licenseViewModel\.licenseState \{\n.*?\}\n',
-    '\n',
-    src, flags=re.DOTALL
-)
-with open(path, "w") as f:
-    f.write(src)
-print(f"  Patched {path}")
-PYEOF
-else
-    echo "  (no trialExpired block found — skipping)"
-fi
-
-# --- MetricsView.swift ---
-python3 << 'PYEOF'
-path = "VoiceInk/Views/MetricsView.swift"
-with open(path) as f:
-    lines = f.readlines()
-
-out = []
-skip = False
-for line in lines:
-    if '// Trial Message' in line or (not skip and 'if case .trial' in line and 'licenseViewModel' in line):
-        skip = True
-        continue
-    if skip and 'Content(' in line:
-        skip = False
-    if skip:
-        continue
-    out.append(line)
-
-with open(path, "w") as f:
-    f.writelines(out)
-print("  Patched MetricsView.swift")
-PYEOF
-
-# --- DashboardPromotionsSection.swift ---
-python3 << 'PYEOF'
-import re
-path = "VoiceInk/Views/Metrics/DashboardPromotionsSection.swift"
-with open(path) as f:
-    src = f.read()
-src = re.sub(
-    r'(private var shouldShowUpgradePromotion: Bool \{\n).*?(\n    \})',
-    r'\1        false\2',
-    src, flags=re.DOTALL
-)
-with open(path, "w") as f:
-    f.write(src)
-print("  Patched DashboardPromotionsSection.swift")
-PYEOF
-
-# --- LicenseManagementView.swift (support message on license tab) ---
-python3 << 'PYEOF'
-path = "VoiceInk/Views/LicenseManagementView.swift"
-with open(path) as f:
-    src = f.read()
-
-# Change hero subtitle for licensed state
-src = src.replace(
-    '"Thank you for supporting VoiceInk"',
-    '"An incredible voice-to-text tool by an indie developer"'
-)
-
-# Replace activatedContent with support message
-START = "    private var activatedContent: some View {\n"
-END = "    private func featureItem"
-
-si = src.index(START)
-ei = src.index(END)
-
-replacement = """\
-    private var activatedContent: some View {
-        VStack(spacing: 32) {
-            VStack(spacing: 24) {
-                HStack {
-                    Image(systemName: "heart.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundStyle(.pink)
-                    Text("Community Patched Build")
-                        .font(.headline)
-                    Spacer()
-                }
-
-                Divider()
-
-                Text("You're using an unofficial build of VoiceInk. This app is crafted by a solo indie developer who pours their heart into making voice-to-text effortless.\\n\\nIf VoiceInk has become part of your daily workflow, consider buying a license to support its continued development.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(4)
-
-                Button(action: {
-                    if let url = URL(string: "https://tryvoiceink.com/") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }) {
-                    Label("Get VoiceInk — Support the Developer", systemImage: "cart.fill")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .padding(32)
-            .background(CardBackground(isSelected: false))
-            .shadow(color: .black.opacity(0.05), radius: 10)
-        }
-    }
-
-"""
-
-src = src[:si] + replacement + src[ei:]
-
-with open(path, "w") as f:
-    f.write(src)
-print("  Patched LicenseManagementView.swift")
-PYEOF
-
-# --- Info.plist (text-based replacement — preserves key ordering) ---
-python3 - "$APPCAST_LINK" "$SPARKLE_PUBLIC_KEY" << 'PYEOF'
-import re, sys
-url, key = sys.argv[1], sys.argv[2]
-path = "VoiceInk/Info.plist"
-with open(path) as f:
-    src = f.read()
-src = re.sub(
-    r'(<key>SUFeedURL</key>\s*<string>)[^<]*(</string>)',
-    r'\g<1>' + url + r'\2',
-    src
-)
-src = re.sub(
-    r'(<key>SUPublicEDKey</key>\s*<string>)[^<]*(</string>)',
-    r'\g<1>' + key + r'\2',
-    src
-)
-with open(path, "w") as f:
-    f.write(src)
-print("  Patched Info.plist")
-PYEOF
-
-# --- Launch permission monitor (drop in supplemental Swift source) ---
-cp "$STASH_DIR/patches/LaunchPermissionMonitor.swift" VoiceInk/LaunchPermissionMonitor.swift
-echo "  Copied LaunchPermissionMonitor.swift"
-
-# --- AppDelegate.swift (wire launch permission monitor) ---
-python3 << 'PYEOF'
-import re
-path = "VoiceInk/AppDelegate.swift"
-with open(path) as f:
-    src = f.read()
-src, n = re.subn(
-    r'(menuBarManager\?\.applyActivationPolicy\(\))',
-    r'\1\n        LaunchPermissionMonitor.shared.bootstrap()',
-    src, count=1
-)
-assert n == 1, "AppDelegate.swift anchor not found"
-with open(path, "w") as f:
-    f.write(src)
-print("  Patched AppDelegate.swift")
-PYEOF
-
-echo "==> All patches applied"
+APPCAST_LINK="$APPCAST_LINK" SPARKLE_PUBLIC_KEY="$SPARKLE_PUBLIC_KEY" \
+    python3 "$STASH_DIR/patches/apply.py"
 
 # ── Restore docs ──────────────────────────────────────────────────────────────
 mkdir -p docs
