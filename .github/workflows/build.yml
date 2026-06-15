@@ -72,16 +72,21 @@ jobs:
             echo "already_released=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Count existing patched releases for this MARKETING_VERSION so
-          # repeated builds against the same upstream version get monotonically
-          # increasing CFBundleVersion / sparkle:version values (176.1, 176.2,
-          # 176.3, ...). Sparkle compares segment-by-segment, so [176, N+1]
-          # always wins over [176, N]. Regex matches both bare `-patched` and
-          # `-patched-rN` variants so re-releases also bump the count.
-          VERSION_RE=${VERSION//./\\.}
-          EXISTING_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name | test(\"^v${VERSION_RE}-.*-patched(-r[0-9]+)?$\")) | .tag_name" \
-            | wc -l | tr -d ' ')
+          # List matching release tags up front (--paginate streams each page's
+          # tags; they concatenate one-per-line). Fail loudly if the API call
+          # breaks so a transient error can't silently reset the sequence to 1.
+          MATCHED_TAGS=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name | test(\"^v${VERSION}-.*-patched(-r[0-9]+)?$\")) | .tag_name") \
+            || { echo "::error::Failed to list releases for version counting"; exit 1; }
+
+          # Count existing patched releases for this MARKETING_VERSION so repeated
+          # builds against the same upstream version get monotonically increasing
+          # CFBundleVersion / sparkle:version values (201.1, 201.2, ...). Sparkle
+          # compares segment-by-segment, so [201, N+1] always wins over [201, N].
+          # The regex matches bare `-patched` and `-patched-rN` so re-releases also
+          # bump the count. NB: keep the dot unescaped -- a jq string literal
+          # rejects "\." (invalid escape), which silently pinned every build to N.1.
+          EXISTING_COUNT=$(printf '%s' "$MATCHED_TAGS" | grep -c '^v' || true)
           SEQ=$((EXISTING_COUNT + 1))
           BUILD_NUMBER="${PROJECT_VERSION}.${SEQ}"
 
