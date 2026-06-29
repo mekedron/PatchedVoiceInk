@@ -1,0 +1,19 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0">
+    <channel>
+        <title>VoiceInk</title>
+        <description>VoiceInk Patched Updates</description>
+        <language>en</language>
+        <item>
+            <title>Version v2.0-958b610-patched</title>
+            <pubDate>Mon, 29 Jun 2026 11:39:46 +0000</pubDate>
+            <enclosure
+                url="https://github.com/mekedron/PatchedVoiceInk/releases/download/v2.0-958b610-patched/VoiceInk-2.0-arm64.dmg"
+                sparkle:version="201.7"
+                sparkle:shortVersionString="2.0-patched"
+                sparkle:edSignature="/xs4uctRD0p45adtY0s/q4sd9lUFljIG9bGR+prZ83OszWgZTsb89AjfjH5BsNJVkk/H/sZymmnrEgc7aHONDg=="
+                length="25749812"
+                type="application/octet-stream" />
+        </item>
+    </channel>
+</rss>

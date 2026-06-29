@@ -33,34 +33,10 @@ class LicenseViewModel: ObservableObject {
     }
 
     func startTrial() {
-        let didStartTrial = licenseManager.startTrialIfNeeded()
-        refreshTrialState()
-        NotificationCenter.default.post(name: .licenseStatusChanged, object: nil)
-
-        if didStartTrial {
-            requestLicenseCelebration()
-        }
     }
 
     private func loadLicenseState() {
-        // Check for existing license key
-        if let storedLicenseKey = licenseManager.licenseKey {
-            self.licenseKey = storedLicenseKey
-
-            // If we have a license key, trust that it's licensed
-            // Skip server validation on startup
-            if licenseManager.activationId != nil || !userDefaults.bool(forKey: "VoiceInkLicenseRequiresActivation") {
-                licenseState = .licensed
-                activationsLimit = userDefaults.activationsLimit
-                return
-            }
-        }
-
-        if let trialStartDate = licenseManager.trialStartDate {
-            refreshTrialState(from: trialStartDate)
-        } else {
-            setUnlicensedState()
-        }
+        licenseState = .licensed
     }
 
     var isLicensed: Bool {
@@ -95,12 +71,7 @@ class LicenseViewModel: ObservableObject {
     }
     
     var canUseApp: Bool {
-        switch licenseState {
-        case .licensed, .trial:
-            return true
-        case .unlicensed, .trialExpired:
-            return false
-        }
+        true
     }
 
     var usageRestrictionMessage: String? {
