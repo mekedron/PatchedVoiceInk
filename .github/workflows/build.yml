@@ -146,6 +146,11 @@ jobs:
           APPCAST_LINK: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/appcast.xml
         run: python3 fork-tools/patches/apply.py
 
+      # MLX (pulled in by upstream) compiles Metal shaders; the runner's Xcode
+      # does not always ship the Metal toolchain.
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       # ── Build whisper.xcframework ────────────────────────────────────────────
       - name: Cache whisper.xcframework
         if: ${{ !inputs.skip_cache }}
@@ -164,9 +169,12 @@ jobs:
           ./build-xcframework.sh
 
       # ── Build VoiceInk ──────────────────────────────────────────────────────
+      # Release, like upstream's `make local`: the Debug configuration builds
+      # "VoiceInk Dev.app" with a separate bundle id, which would not see the
+      # installed app's settings, history or downloaded models.
       - name: Resolve Swift packages
         run: |
-          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
             -derivedDataPath "$LOCAL_DERIVED_DATA" \
             -xcconfig LocalBuild.xcconfig \
             CODE_SIGN_IDENTITY="-" \
@@ -205,7 +213,7 @@ jobs:
 
       - name: Build VoiceInk (${{ matrix.arch_name }})
         run: |
-          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+          xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
             -derivedDataPath "$LOCAL_DERIVED_DATA" \
             -xcconfig LocalBuild.xcconfig \
             CODE_SIGN_IDENTITY="-" \
@@ -217,6 +225,7 @@ jobs:
             ARCHS="${{ matrix.arch }}" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             -skipPackagePluginValidation \
+            -skipMacroValidation \
             build
 
       # ── Package DMG ─────────────────────────────────────────────────────────
@@ -224,7 +233,7 @@ jobs:
         id: dmg
         run: |
           DMG_NAME="VoiceInk-${VERSION}-${{ matrix.arch }}.dmg"
-          APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Debug/VoiceInk.app"
+          APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Release/VoiceInk.app"
 
           if [ ! -d "$APP_PATH" ]; then
             echo "::error::VoiceInk.app not found at $APP_PATH"

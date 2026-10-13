@@ -32,6 +32,23 @@ def vpath(*parts):
     return os.path.join(ROOT, "VoiceInk", *parts)
 
 
+def find_source(name):
+    """Return the path of the one file called `name` under VoiceInk/, or None.
+
+    Upstream moves files between folders (e.g. `Models/` became
+    `Features/Licensing/State/`), so patch targets are found by file name
+    rather than by a fixed path. Two files with the same name is an error:
+    patching the wrong one would ship silently.
+    """
+    matches = []
+    for base, _dirs, files in os.walk(os.path.join(ROOT, "VoiceInk")):
+        if name in files:
+            matches.append(os.path.join(base, name))
+    if len(matches) > 1:
+        raise SystemExit(f"Ambiguous patch target {name}: {matches}")
+    return matches[0] if matches else None
+
+
 def read(path):
     with open(path) as f:
         return f.read()
@@ -49,7 +66,10 @@ def patch_license_view_model():
     builds; these substitutions keep the non-LOCAL_BUILD path licensed too and
     are kept as defense-in-depth. Each is a no-op if upstream drops the anchor.
     """
-    path = vpath("Models", "LicenseViewModel.swift")
+    path = find_source("LicenseViewModel.swift")
+    if not path:
+        print("  WARNING: LicenseViewModel.swift not found — relying on LOCAL_BUILD alone")
+        return
     src = read(path)
     src = re.sub(
         r'@Published private\(set\) var licenseState: LicenseState = \.trial\([^)]*\)[^\n]*',
@@ -65,7 +85,7 @@ def patch_license_view_model():
     src = re.sub(r'var canUseApp: Bool \{\n(.*?\n)*?    \}', 'var canUseApp: Bool {\n        true\n    }', src)
     src = re.sub(r'licenseState = \.trial\(daysRemaining: trialPeriodDays\)[^\n]*', 'licenseState = .licensed', src)
     write(path, src)
-    print("  Patched LicenseViewModel.swift")
+    print(f"  Patched {os.path.relpath(path, ROOT)}")
 
 
 def patch_transcription_pipeline():
@@ -99,8 +119,8 @@ def patch_transcription_pipeline():
 
 def patch_dashboard_promotions():
     """Hide every dashboard promo card (upgrade nag + affiliate program)."""
-    path = vpath("Views", "Dashboard", "DashboardPromotionsSection.swift")
-    if not os.path.exists(path):
+    path = find_source("DashboardPromotionsSection.swift")
+    if not path:
         print("  WARNING: DashboardPromotionsSection.swift not found — skipping")
         return
     src, n = re.subn(
@@ -116,8 +136,8 @@ def patch_dashboard_promotions():
 
 def patch_license_management_view():
     """Inject a community-build support card atop the licensed `activeContent`."""
-    path = vpath("Views", "LicenseManagementView.swift")
-    if not os.path.exists(path):
+    path = find_source("LicenseManagementView.swift")
+    if not path:
         print("  WARNING: LicenseManagementView.swift not found — skipping")
         return
     src = read(path)
@@ -198,7 +218,8 @@ def patch_launch_permission_monitor():
     shutil.copy(supplement, vpath("LaunchPermissionMonitor.swift"))
     print("  Copied LaunchPermissionMonitor.swift")
 
-    path = vpath("AppDelegate.swift")
+    path = find_source("AppDelegate.swift")
+    assert path, "AppDelegate.swift not found"
     src, n = re.subn(
         r'(menuBarManager\?\.applyActivationPolicy\(\))',
         r'\1\n        LaunchPermissionMonitor.shared.bootstrap()',
@@ -207,7 +228,7 @@ def patch_launch_permission_monitor():
     )
     assert n == 1, "AppDelegate.swift anchor not found"
     write(path, src)
-    print("  Patched AppDelegate.swift")
+    print(f"  Patched {os.path.relpath(path, ROOT)}")
 
 
 def main():
