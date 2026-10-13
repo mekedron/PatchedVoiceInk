@@ -169,6 +169,9 @@ jobs:
           ./build-xcframework.sh
 
       # ── Build VoiceInk ──────────────────────────────────────────────────────
+      # The architecture comes from -destination, not ARCHS: an ARCHS override
+      # also applies to host tools such as Swift macro plugins, which must stay
+      # arm64 on the arm64 runner, so the x86_64 build cannot find them.
       # Release, like upstream's `make local`: the Debug configuration builds
       # "VoiceInk Dev.app" with a separate bundle id, which would not see the
       # installed app's settings, history or downloaded models.
@@ -183,7 +186,8 @@ jobs:
             DEVELOPMENT_TEAM="" \
             CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
-            ARCHS="${{ matrix.arch }}" \
+            -destination "platform=macOS,arch=${{ matrix.arch }}" \
+            ONLY_ACTIVE_ARCH=YES \
             -resolvePackageDependencies
 
       - name: Patch FluidAudio package (Swift 5 mode)
@@ -222,7 +226,8 @@ jobs:
             DEVELOPMENT_TEAM="" \
             CODE_SIGN_ENTITLEMENTS="$(pwd)/VoiceInk/VoiceInk.local.entitlements" \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
-            ARCHS="${{ matrix.arch }}" \
+            -destination "platform=macOS,arch=${{ matrix.arch }}" \
+            ONLY_ACTIVE_ARCH=YES \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             -skipPackagePluginValidation \
             -skipMacroValidation \
