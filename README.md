@@ -29,7 +29,7 @@ Every Monday at 10:00 UTC (or on manual trigger), GitHub Actions:
 |------|---------|
 | [`.github/workflows/build.yml`](.github/workflows/build.yml) | Canonical release pipeline — runs on cron + `workflow_dispatch`. Builds, signs, publishes both architectures. |
 | [`patch.sh`](patch.sh) | Local script that mirrors what CI does, for development iteration and emergency manual releases. |
-| [`patches/`](patches/) | Supplemental Swift sources injected into the upstream tree (currently `LaunchPermissionMonitor.swift`). Both `patch.sh` and `build.yml` copy from here, so it's the single source of truth for any net-new code. |
+| [`patches/`](patches/) | Supplemental Swift sources injected into the upstream tree (`LaunchPermissionMonitor.swift`, `TranscriptTypography.swift`). Both `patch.sh` and `build.yml` copy from here, so it's the single source of truth for any net-new code. |
 | [`docs/appcast.xml`](docs/appcast.xml) | Sparkle update feed served via GitHub Pages. Rewritten by CI on every release. |
 
 ## Local development
@@ -83,6 +83,7 @@ The whisper.xcframework is auto-built on first run and cached in `~/VoiceInk-Dep
 | `Views/LicenseManagementView.swift` | Inject a "Community Patched Build" support card at the top of the licensed `activeContent`, linking to tryvoiceink.com |
 | `Info.plist` | `SUFeedURL` + `SUPublicEDKey` → fork values |
 | `AppDelegate.swift` (modified) + `LaunchPermissionMonitor.swift` (new, copied from `patches/`) | Re-prompt for Microphone, Accessibility, and Screen Recording on every launch — the patched build's signature differs from the official one, so existing permission grants don't transfer |
+| `WordReplacementService.swift` (modified) + `TranscriptTypography.swift` (new, copied from `patches/`) | Parakeet V3 and Ultra cannot output "ё", "Ё" or dashes: they write `<unk>` for "ё" and a spaced hyphen for a dash. Before dictionary rules run, `<unk>` becomes "ё" ("Ё" at a sentence start or before a capital), and a hyphen with spaces on both sides becomes "—". Soft-fails if the hook moves. |
 
 The trial/expired banner and the `trialExpired` transcription notice are no longer patched out explicitly: in the forced-licensed state upstream already renders nothing for them, so those patches were dropped (the `TranscriptionPipeline` step now soft-skips). The cosmetic patches above **soft-fail** — if a future upstream refactor moves an anchor, the step prints a warning and continues instead of breaking the release.
 

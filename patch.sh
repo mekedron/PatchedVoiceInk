@@ -79,7 +79,7 @@ git show main:docs/appcast.xml > "$STASH_DIR/appcast.xml" 2>/dev/null || true
 # ensures we're on `patch` with these files present. `apply.py` is the single
 # source of truth for every patch — see also .github/workflows/build.yml.
 mkdir -p "$STASH_DIR/patches"
-cp patches/apply.py patches/LaunchPermissionMonitor.swift "$STASH_DIR/patches/"
+cp patches/apply.py patches/*.swift "$STASH_DIR/patches/"
 
 # ── Switch to main and reset to upstream ──────────────────────────────────────
 echo ""
