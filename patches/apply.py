@@ -231,6 +231,34 @@ def patch_launch_permission_monitor():
     print(f"  Patched {os.path.relpath(path, ROOT)}")
 
 
+def patch_transcript_typography():
+    """Restore "ё"/"Ё" and dashes that Parakeet's tokenizer cannot produce.
+
+    Drops in TranscriptTypography.swift and runs it at the top of
+    WordReplacementService.applyReplacements, the one step every transcription
+    path (live, imported file, retranscribe) shares, before dictionary rules.
+    Soft-fails: without the hook the app still works, only without the fix.
+    """
+    shutil.copy(os.path.join(HERE, "TranscriptTypography.swift"), vpath("TranscriptTypography.swift"))
+    print("  Copied TranscriptTypography.swift")
+
+    path = find_source("WordReplacementService.swift")
+    if not path:
+        print("  WARNING: WordReplacementService.swift not found — typography fix NOT applied")
+        return
+    src, n = re.subn(
+        r'(func applyReplacements\(to text: String, using context: ModelContext\) -> String \{\n)',
+        r'\1        let text = TranscriptTypography.normalize(text)\n',
+        read(path),
+        count=1,
+    )
+    if n:
+        write(path, src)
+        print(f"  Patched {os.path.relpath(path, ROOT)}")
+    else:
+        print("  WARNING: applyReplacements anchor not found — typography fix NOT applied")
+
+
 def main():
     print("==> Applying VoiceInk fork patches...")
     patch_license_view_model()
@@ -239,6 +267,7 @@ def main():
     patch_license_management_view()
     patch_info_plist()
     patch_launch_permission_monitor()
+    patch_transcript_typography()
     print("==> All patches applied")
 
 
