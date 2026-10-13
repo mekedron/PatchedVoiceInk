@@ -154,12 +154,7 @@ final class LicenseViewModel: ObservableObject {
     }
 
     var canUseApp: Bool {
-        switch licenseState {
-        case .licensed, .trial:
-            return true
-        case .unlicensed, .trialExpired:
-            return false
-        }
+        true
     }
 
     var usageRestrictionMessage: String? {

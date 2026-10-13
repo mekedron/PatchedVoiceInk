@@ -29,6 +29,7 @@ final class WordReplacementService {
     private init() {}
 
     func applyReplacements(to text: String, using context: ModelContext) -> String {
+        let text = TranscriptTypography.normalize(text)
         // `isEnabled` is retained only for store and CloudKit compatibility.
         // Replacement rules are intentionally always active.
         let descriptor = FetchDescriptor<WordReplacement>()
