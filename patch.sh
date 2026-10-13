@@ -150,7 +150,7 @@ fi
 echo ""
 echo "==> Resolving packages..."
 rm -rf "$LOCAL_DERIVED_DATA"
-xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
     -derivedDataPath "$LOCAL_DERIVED_DATA" \
     -xcconfig LocalBuild.xcconfig \
     CODE_SIGN_IDENTITY="-" \
@@ -180,7 +180,7 @@ PYEOF
 fi
 
 echo "==> Building VoiceInk..."
-xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
     -derivedDataPath "$LOCAL_DERIVED_DATA" \
     -xcconfig LocalBuild.xcconfig \
     CODE_SIGN_IDENTITY="-" \
@@ -190,9 +190,10 @@ xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
     CODE_SIGN_ENTITLEMENTS="$ROOT/VoiceInk/VoiceInk.local.entitlements" \
     SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) LOCAL_BUILD' \
     -skipPackagePluginValidation \
+    -skipMacroValidation \
     build
 
-APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Debug/VoiceInk.app"
+APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Release/VoiceInk.app"
 if [ ! -d "$APP_PATH" ]; then
     echo "Error: Build failed — VoiceInk.app not found"
     exit 1
@@ -255,7 +256,7 @@ VERSION=$(grep 'MARKETING_VERSION' VoiceInk.xcodeproj/project.pbxproj \
     | head -1 | grep -oE '[0-9]+\.[0-9]+[0-9.]*')
 TAG="v${VERSION}-${UPSTREAM_SHA_SHORT}-patched"
 DMG_NAME="VoiceInk-${VERSION}.dmg"
-APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Debug/VoiceInk.app"
+APP_PATH="$LOCAL_DERIVED_DATA/Build/Products/Release/VoiceInk.app"
 
 if [ ! -f "$DMG_NAME" ]; then
     echo "Error: $DMG_NAME not found. Run ./patch.sh first."
